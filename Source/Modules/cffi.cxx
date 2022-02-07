@@ -1,5 +1,5 @@
 /* -----------------------------------------------------------------------------
- * This file is part of SWIG, which is licensed as a whole under version 3 
+ * This file is part of SWIG, which is licensed as a whole under version 3
  * (or any later version) of the GNU General Public License. Some additional
  * terms also apply to certain portions of SWIG. The full details of the SWIG
  * license and copyrights can be found in the LICENSE and COPYRIGHT files
@@ -29,14 +29,17 @@ CFFI Options (available with -cffi)\n\
                          macro, functions, etc. which SWIG uses while\n\
                          generating wrappers. These macros, functions may still\n\
                          be used by generated wrapper code.\n\
+     -generate-grovel  - Generate a grovel file for things such as defwrapper forms\n\
 ";
 
 class CFFI:public Language {
 public:
   String *f_cl;
+  String *f_cl_grovel;
+  String *f_cl_grovel_head;
   String *f_clhead;
   String *f_clwrap;
-  bool CWrap;     // generate wrapper file for C code?  
+  bool CWrap;     // generate wrapper file for C code?
   File *f_begin;
   File *f_runtime;
   File *f_cxx_header;
@@ -83,6 +86,7 @@ private:
   String *trim(String *string);
   int generate_typedef_flag;
   bool no_swig_lisp;
+  bool generate_grovel;
 };
 
 void CFFI::main(int argc, char *argv[]) {
@@ -93,6 +97,7 @@ void CFFI::main(int argc, char *argv[]) {
   SWIG_config_file("cffi.swg");
   generate_typedef_flag = 0;
   no_swig_lisp = false;
+  generate_grovel = false;
   CWrap = false;
   for (i = 1; i < argc; i++) {
     if (!Strcmp(argv[i], "-help")) {
@@ -112,12 +117,16 @@ void CFFI::main(int argc, char *argv[]) {
     } else if (!strcmp(argv[i], "-noswig-lisp")) {
       no_swig_lisp = true;
       Swig_mark_arg(i);
+    } else if (!strcmp(argv[i], "-generate-grovel")) {
+      generate_grovel = true;
+      Swig_mark_arg(i);
     }
-
   }
   f_clhead = NewString("");
   f_clwrap = NewString("");
   f_cl = NewString("");
+  f_cl_grovel = NewString("");
+  f_cl_grovel_head = NewString("");
 
   allow_overloading();
 }
@@ -128,8 +137,10 @@ int CFFI::top(Node *n) {
 
   String *cxx_filename = Getattr(n, "outfile");
   String *lisp_filename = NewString("");
+  String *grovel_filename = NewString("");
 
   Printf(lisp_filename, "%s%s.lisp", SWIG_output_directory(), module);
+  Printf(grovel_filename, "%s%s-grovel.lisp", SWIG_output_directory(), module);
 
   File *f_lisp = NewFile(lisp_filename, "w", SWIG_output_files());
   if (!f_lisp) {
@@ -167,6 +178,10 @@ int CFFI::top(Node *n) {
   Swig_register_filebyname("begin", f_begin);
   Swig_register_filebyname("runtime", f_runtime);
   Swig_register_filebyname("lisphead", f_clhead);
+  if (!generate_grovel)
+    Swig_register_filebyname("swiggrovel", f_null);
+  else
+    Swig_register_filebyname("swiggrovel", f_cl_grovel_head);
   if (!no_swig_lisp)
     Swig_register_filebyname("swiglisp", f_cl);
   else
@@ -179,12 +194,26 @@ int CFFI::top(Node *n) {
   Swig_banner_target_lang(f_lisp, ";;;");
 
   Language::top(n);
+
   Printf(f_lisp, "%s\n", f_clhead);
   Printf(f_lisp, "%s\n", f_cl);
+  if (generate_grovel) {
+      File *f_grovel;
+      f_grovel = NewFile(grovel_filename, "w", SWIG_output_files());
+      if (!f_grovel) {
+          FileErrorDisplay(lisp_filename);
+          SWIG_exit(EXIT_FAILURE);
+      }
+
+      Printf(f_grovel, "%s\n", f_cl_grovel_head);
+      Printf(f_grovel, "%s\n", f_cl_grovel);
+  }
   Printf(f_lisp, "%s\n", f_clwrap);
 
   Delete(f_lisp);
   Delete(f_cl);
+  Delete(f_cl_grovel);
+  Delete(f_cl_grovel_head);
   Delete(f_clhead);
   Delete(f_clwrap);
   Dump(f_runtime, f_begin);
@@ -251,7 +280,7 @@ void CFFI::emit_defmethod(Node *n) {
   int argnum = 0;
   Node *parent = getCurrentClass();
   bool first = 0;
-  
+
   for (Parm *p = pl; p; p = nextSibling(p), argnum++) {
     String *argname = Getattr(p, "name");
     String *ffitype = Swig_typemap_lookup("lispclass", p, "", 0);
@@ -262,7 +291,7 @@ void CFFI::emit_defmethod(Node *n) {
       first = true;
     else
       Printf(args_placeholder, " ");
-      
+
     if (!argname) {
       argname = NewStringf("arg%d", argnum);
       tempargname = 1;
@@ -287,7 +316,7 @@ void CFFI::emit_defmethod(Node *n) {
   }
 
   String *method_name = Getattr(n, "name");
-  int x = Replace(method_name, "operator ", "", DOH_REPLACE_FIRST); //  
+  int x = Replace(method_name, "operator ", "", DOH_REPLACE_FIRST); //
 
   if (x == 1)
     Printf(f_clos, "(cl:shadow \"%s\")\n", method_name);
@@ -474,7 +503,7 @@ int CFFI::functionWrapper(Node *n) {
   // Emit all of the local variables for holding arguments.
   emit_parameter_variables(parms, f);
 
-  // Attach the standard typemaps 
+  // Attach the standard typemaps
   Swig_typemap_attach_parms("ctype", parms, f);
   emit_attach_parmmaps(parms, f);
 
@@ -601,22 +630,33 @@ void CFFI::emit_defun(Node *n, String *name) {
 
   ParmList *pl = Getattr(n, "parms");
 
+  String *storage = Getattr(n, "storage");
+  String *destination = f_cl;
+  bool is_static = storage && (Strcmp(storage, "static") == 0);
+  if (is_static) {
+      destination = f_cl_grovel;
+  }
+
   int argnum = 0;
 
   func_name = lispify_name(n, func_name, "'function");
 
   emit_inline(n, func_name);
 
-  Printf(f_cl, "\n(cffi:defcfun (\"%s\" %s)", name, func_name);
+  if (!is_static) {
+      Printf(destination, "\n(cffi:defcfun (\"%s\" %s)", name, func_name);
+  } else {
+      Printf(destination, "\n(defwrapper (\"%s\" %s)", name, func_name);
+  }
   String *ffitype = Swig_typemap_lookup("cout", n, ":pointer", 0);
 
-  Printf(f_cl, " %s", ffitype);
+  Printf(destination, " %s", ffitype);
   Delete(ffitype);
 
   for (Parm *p = pl; p; p = nextSibling(p), argnum++) {
 
     if (SwigType_isvarargs(Getattr(p, "type"))) {
-      Printf(f_cl, "\n  %s", NewString("&rest"));
+      Printf(destination, "\n  %s", NewString("&rest"));
       continue;
     }
 
@@ -634,14 +674,14 @@ void CFFI::emit_defun(Node *n, String *name) {
       tempargname = 1;
     }
 
-    Printf(f_cl, "\n  (%s %s)", argname, ffitype);
+    Printf(destination, "\n  (%s %s)", argname, ffitype);
 
     Delete(ffitype);
 
     if (tempargname)
       Delete(argname);
   }
-  Printf(f_cl, ")\n");    /* finish arg list */
+  Printf(destination, ")\n");    /* finish arg list */
 
   emit_export(n, func_name);
 }
@@ -854,15 +894,15 @@ void CFFI::emit_class(Node *n) {
 
   //   String *ns_list = listify_namespace(Getattr(n,"cffi:namespace"));
   //   update_package_if_needed(n,f_clhead);
-  //   Printf(f_clos, 
-  //          "(swig-def-foreign-class \"%s\"\n %s\n  (:%s\n%s))\n\n", 
+  //   Printf(f_clos,
+  //          "(swig-def-foreign-class \"%s\"\n %s\n  (:%s\n%s))\n\n",
   //          name, supers, kind, slotdefs);
 
   Delete(supers);
   //  Delete(ns_list);
 
   //  Parm *pattern = NewParm(name, NULL, n);
-  // Swig_typemap_register("cin",pattern,lisp_name,NULL,NULL);  
+  // Swig_typemap_register("cin",pattern,lisp_name,NULL,NULL);
   //Swig_typemap_register("cout",pattern,lisp_name,NULL,NULL);
   //Delete(pattern);
 
@@ -916,7 +956,7 @@ void CFFI::emit_struct_union(Node *n, bool un = false) {
       //C declaration ignore
       //        Printf(stderr, "Structure %s has a slot that we can't deal with.\n",
       //               name);
-      //        Printf(stderr, "nodeType: %s, name: %s, type: %s\n", 
+      //        Printf(stderr, "nodeType: %s, name: %s, type: %s\n",
       //               nodeType(c),
       //               Getattr(c, "name"),
       //               Getattr(c, "type"));
@@ -1093,7 +1133,7 @@ String *CFFI::convert_literal(String *literal, String *type, bool try_to_split) 
   }
 
   if (SwigType_type(type) == T_FLOAT || SwigType_type(type) == T_DOUBLE || SwigType_type(type) == T_LONGDOUBLE) {
-    // Use CL syntax for float literals 
+    // Use CL syntax for float literals
 
     // careful. may be a float identifier or float constant.
     char *num_start = Char(num);
