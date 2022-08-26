@@ -974,11 +974,16 @@ void CFFI::emit_struct_union(Node *n, bool un = false) {
 
       String *slot_name = lispify_name(c, Getattr(c, "sym:name"), "'slotname");
       if (slot_name && (Strcmp(slot_name, "t") == 0 || Strcmp(slot_name, "T") == 0))
-	slot_name = NewStringf("t_var");
+          slot_name = NewStringf("t_var");
 
       if (SwigType_isarray(childType) && SwigType_array_ndim(childType) == 1) {
           String *dim = SwigType_array_getdim(childType, 0);
-          Printf(f_cl, "\n\t(%s %s :count %s)", slot_name, typespec, dim);
+          Printf(stdout, "cmp: %d\n", Strcmp(dim, ""));
+          if (Strcmp(dim, "")) {
+              Printf(f_cl, "\n\t(%s %s :count %s)", slot_name, typespec, dim);
+          } else {
+              Printf(f_cl, "\n\t(%s %s)", slot_name, typespec);
+          }
           Delete(dim);
       } else
           Printf(f_cl, "\n\t(%s %s)", slot_name, typespec);
