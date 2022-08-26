@@ -1175,7 +1175,7 @@ String *CFFI::convert_literal(String *literal, String *type, bool try_to_split) 
     String* result = NewStringf("\"%s\"", num_param);
     Delete(num);
     return result;
-  } else if (SwigType_type(type) == T_INT || SwigType_type(type) == T_UINT) {
+  } else if (SwigType_type(type) == T_INT || SwigType_type(type) == T_UINT || SwigType_type(type) == T_ULONGLONG) {
     // Printf(stderr, "Is a T_INT or T_UINT %s, before replaceall\n", s);
     const char *num_start = Char(num);
     bool is_literal = isdigit(*num_start) || (*num_start == '.') || (*num_start == '+') || (*num_start == '-');
